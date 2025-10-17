@@ -4,7 +4,7 @@ from Problem import AthletePerformanceProblem
 class AthleteTrainingCSP:
     """
     Implementation of a Constraint Satisfaction Problem approach for athlete training planning
-    using only backtracking search.
+    using backtracking search.
     
     The CSP approach models the athlete training planning problem with:
     - Variables: Training activities for each day
@@ -16,26 +16,23 @@ class AthleteTrainingCSP:
     def __init__(self, 
         initial_state=(0, 0.0, 0.0, 1.0),
         target_day=30,
-        max_fatigue=2.7,
-        max_risk=0.5):
-        
-        """
-        Initialize the CSP for athlete training planning.
-        
-        Args:
-            initial_state: Tuple of (day, fatigue, risk, performance)
-            target_day: Target training period length in days
-            max_fatigue: Maximum allowable fatigue level
-            max_risk: Maximum allowable injury risk
-        """
+        target_fatigue=2.7,
+        target_risk=0.5,
+        sleep_duration = 7.5,
+        sleep_quality = 3.0,
+        stress_level = 2.5):
         
         # an object of the problem definition
-        self.athlete_problem = AthletePerformanceProblem(initial_state=initial_state)
+        self.athlete_problem = AthletePerformanceProblem(
+            initial_state=initial_state,
+            sleep_duration=sleep_duration,
+            sleep_quality=sleep_quality,
+            stress_level=stress_level)
         
         # Thresholds
         self.target_day = target_day
-        self.max_fatigue = max_fatigue
-        self.max_risk = max_risk
+        self.target_fatigue = target_fatigue
+        self.target_risk = target_risk
         
         # Initialize state with history
         day, f, r, p = initial_state
@@ -46,6 +43,10 @@ class AthleteTrainingCSP:
             'days_since_game': 0,
             'days_since_last_injury': 0}
         ])
+        #physiological parameters
+        self.sleep_quality = sleep_quality
+        self.sleep_duration = sleep_duration
+        self.stress_level = stress_level
         
         self.intensities = [0.0, 0.3, 0.6, 0.9]
         self.durations = [0, 60, 90, 120]
@@ -68,18 +69,16 @@ class AthleteTrainingCSP:
             'pruning_count': 0
         }
 
+    def is_goal(self, state):
+        day, fatigue, risk, performance, _ = state
+        return (day == self.target_day
+                and fatigue <= self.target_fatigue
+                and risk <= self.target_risk)
+        
     def get_domains(self):
         return self.domains
     
     def apply_action(self, state, action):
-        """
-        Args:
-            state: Tuple of (day, fatigue, risk, performance, history)
-            action: Tuple of (intensity, duration)
-            
-        Returns:
-            The resulting new state after applying the action
-        """
         
         # caching to avoid recalculating
         cache_key = (str(state), str(action))
@@ -97,20 +96,11 @@ class AthleteTrainingCSP:
         return new_state
     
     def check_constraints(self, state):
-        """Check if the current state satisfies all constraints"""
         _, fatigue, risk, _, _ = state
-        return fatigue <= self.max_fatigue and risk <= self.max_risk
+        return fatigue <= self.target_fatigue and risk <= self.target_risk
 
     def evaluate_solution(self, solution):
-        """
-        Evaluate a complete training plan.
-        
-        Args:
-            solution: List of (intensity, duration) actions for each day
-            
-        Returns:
-            Dictionary with evaluation metrics
-        """
+
         current_state = self.initial_state
         states = [current_state]
         
@@ -125,7 +115,7 @@ class AthleteTrainingCSP:
         # Calculate metrics
         highest_fatigue = max(state[1] for state in states)
         highest_risk = max(state[2] for state in states)
-        constraints_violated = any(state[1] > self.max_fatigue or state[2] > self.max_risk for state in states)
+        constraints_violated = any(state[1] > self.target_fatigue or state[2] > self.target_risk for state in states)
         
         # Calculate training metrics
         rest_days = sum(1 for action in solution if action[0] == 0.0 and action[1] == 0)
@@ -146,15 +136,6 @@ class AthleteTrainingCSP:
         }
 
     def backtracking_search(self, time_limit=120):
-        """
-        Backtracking search algorithm that stops after finding the first valid solution.
-        
-        Args:
-            time_limit: Maximum time in seconds to run the backtracking search
-            
-        Returns:
-            The first solution found that reaches the target day
-        """
         # reset our tracking stats for this search run
         self.backtrack_stats = {
             'iterations': 0,
@@ -167,9 +148,6 @@ class AthleteTrainingCSP:
         
         # nested backtracking function that does the recursive search
         def _backtrack(assignment, current_state, depth=0):
-            """
-            Recursive backtracking function that stops after finding the first valid solution.
-            """
             nonlocal solution_found, solution
             if solution_found:
                 return True
@@ -229,7 +207,90 @@ class AthleteTrainingCSP:
         
         return solution
     
-    
+    def search(self):
+        start_time = time.time()
+        solution = self.backtracking_search()
+        execution_time = time.time() - start_time
+
+        if not solution:
+            return {
+                'success': False,
+                'message': 'No solution found',
+                'stats': {
+                    'nodesExplored': self.backtrack_stats['iterations'],
+                    'maxQueueSize': self.backtrack_stats['max_depth'],
+                    'executionTime': execution_time
+                }
+            }
+
+        evaluation = self.evaluate_solution(solution)
+        schedule = self._build_schedule(solution)
+        
+        return {
+            'success': True,
+            'message': 'Solution found with CSP',
+            'schedule': schedule,
+            'finalState': {
+                'day': self.target_day,
+                'performance': evaluation['final_performance'],
+                'fatigue': evaluation['final_fatigue'],
+                'risk': evaluation['final_risk']
+            },
+            'stats': {
+                'nodesExplored': self.backtrack_stats['iterations'],
+                'maxQueueSize': self.backtrack_stats['max_depth'],
+                'executionTime': execution_time
+            },
+            'metrics': {
+                'total_days': self.target_day,
+                'rest_days': evaluation['rest_days'],
+                'high_intensity_days': evaluation['high_intensity_days'],
+                'total_workload': evaluation['total_workload'],
+                'highest_fatigue': evaluation['highest_fatigue'],
+                'highest_risk': evaluation['highest_risk']
+            }
+        }
+
+    def _build_schedule(self, solution):
+        """Create standardized schedule format"""
+        schedule = []
+        current_state = self.initial_state
+        
+        for action in solution:
+            current_state = self.apply_action(current_state, action)
+            day, fatigue, risk, performance, _ = current_state
+            
+            schedule.append({
+                'day': day,
+                'intensity': action[0],
+                'duration': action[1],
+                'performance': performance,
+                'fatigue': fatigue,
+                'risk': risk
+            })
+        
+        # Fill in missing days if any
+        full_schedule = []
+        expected_day = 1
+        for entry in schedule:
+            while entry['day'] > expected_day:
+                full_schedule.append(self._create_empty_day(expected_day))
+                expected_day += 1
+            full_schedule.append(entry)
+            expected_day += 1
+        
+        return full_schedule
+
+    def _create_empty_day(self, day):
+        """Handle missing days in schedule"""
+        return {
+            'day': day,
+            'intensity': 0.0,
+            'duration': 0,
+            'performance': 0,
+            'fatigue': 0,
+            'risk': 0
+    }
     #### FUNCTION DEFINITION: ORDERING DOMAIN VALUES
     # This function is the heart of the CSP optimizer's decision-making process.
     # It determines which training actions should be tried first during backtracking search.
@@ -237,13 +298,8 @@ class AthleteTrainingCSP:
         """
         Advanced priority ordering of domain values (actions) with a sophisticated formula 
         that heavily prioritizes performance maximization above all else.
-        
-        Args:
-            state: Current state which includes day, fatigue, risk, performance and history
-            
-        Returns:
-            List of actions ordered by most promising first (best actions at the beginning)
         """
+        
         # Unpacking the state variables for easier access
         day, fatigue, risk, performance, history = state
         actions = self.get_domains()
@@ -268,16 +324,16 @@ class AthleteTrainingCSP:
         #### PREPARATION: CALCULATE CURRENT STATE METRICS
         ## headroom: how much more fatigue/risk the athlete can handle
         # 0 means he can handle nothing
-        fatigue_headroom = max(0, self.max_fatigue - fatigue)
-        risk_headroom = max(0, self.max_risk - risk)
+        fatigue_headroom = max(0, self.target_fatigue - fatigue)
+        risk_headroom = max(0, self.target_risk - risk)
         
         # Count consecutive training days (days without rest)
         days_since_rest = sum(1 for h in reversed(history) if h.get('load', 0) > 0.1)
         
         # fatigue and risk status
         # >80% of maximum?  
-        high_fatigue = fatigue > (self.max_fatigue * 0.8)
-        high_risk = risk > (self.max_risk * 0.8)
+        high_fatigue = fatigue > (self.target_fatigue * 0.8)
+        high_risk = risk > (self.target_risk * 0.8)
         remaining_days_factor= ((day+1)/self.target_day)
         #### EVALUATION: evaluate EACH POSSIBLE ACTION
         for action in actions:
@@ -287,7 +343,7 @@ class AthleteTrainingCSP:
             _, future_fatigue, future_risk, future_performance, _ = future_state
             
             ## violate constraints are given negative infinity (so it goes to the end when the domain is sorted)
-            if future_fatigue > self.max_fatigue or future_risk > self.max_risk:
+            if future_fatigue > self.target_fatigue or future_risk > self.target_risk:
                 action_values[action] = -float('inf') 
                 self.backtrack_stats['pruning_count'] += 1 
                 continue  
@@ -302,8 +358,8 @@ class AthleteTrainingCSP:
             efficiency = perf_improvement / max(0.5, training_load) if training_load > 0 else 0
             
             # Calculate future headroom values to see how action affects future training capacity
-            future_fatigue_headroom = max(0, self.max_fatigue - future_fatigue)
-            future_risk_headroom = max(0, self.max_risk - future_risk)
+            future_fatigue_headroom = max(0, self.target_fatigue - future_fatigue)
+            future_risk_headroom = max(0, self.target_risk - future_risk)
                         
             recovery_value = 0
             if intensity == 0 and duration == 0:  # Rest day
@@ -342,70 +398,3 @@ class AthleteTrainingCSP:
             )
         # Sort actions in descending order (best first) based on the scoring system we set
         return sorted(actions, key=lambda a: action_values.get(a, 0), reverse=True)
-
-def test_backtracking_csp_max_performance():
-    """Test the CSP approach with optimized backtracking for maximum performance."""
-    
-    print("Testing CSP Athlete Training Planner for Maximum Performance")
-    print("---------------------------------------------------------")
-    
-    # CSP problem with specific parameters
-    problem = AthleteTrainingCSP(
-        initial_state=(0, 1.8, 0.2, 6.0),  # initial state
-        target_day=14,                    
-        max_fatigue=2.7,                 
-        max_risk=0.22                      
-    )
-    
-    print("Finding solution to maximize performance...")
-    start_time = time.time()
-    solution = problem.backtracking_search(time_limit=120) 
-    end_time = time.time()
-    
-    print(f"Search completed in {end_time - start_time:.2f} seconds")
-    print(f"Backtracking iterations: {problem.backtrack_stats['iterations']}")
-    print(f"Maximum depth reached: {problem.backtrack_stats['max_depth']}")
-    print(f"Number of branches pruned: {problem.backtrack_stats['pruning_count']}")
-    
-    if solution is None:
-        print("No solution found.")
-        return
-    
-    # Display the training plan
-    print("\nTraining Plan:")
-    print("Day | Intensity | Duration | Fatigue | Risk | Performance")
-    print("----|-----------|----------|---------|------|------------")
-    
-    # Display initial state
-    state = problem.initial_state
-    day = 0
-    print(f"{day:3d} | {'-':9} | {'-':8} |  {state[1]:.2f}   | {state[2]:.2f} | {state[3]:.2f}")
-    
-    # Display each day in the training plan
-    for i, action in enumerate(solution):
-        state = problem.apply_action(state, action)
-        day = i + 1
-        intensity, duration = action
-        print(f"{day:3d} | {intensity:9.1f} | {duration:8.1f} |  {state[1]:.2f}   | {state[2]:.2f} | {state[3]:.2f}")
-    
-    # Display final state summary
-    final_day, final_fatigue, final_risk, final_perf, _ = state
-    print("\nFinal State:")
-    print(f"Day: {final_day}")
-    print(f"Fatigue: {final_fatigue:.2f}/{problem.max_fatigue:.2f}")
-    print(f"Risk: {final_risk:.2f}/{problem.max_risk:.2f}")
-    print(f"Performance: {final_perf:.2f}/10.00")
-    
-    # Evaluate solution
-    evaluation = problem.evaluate_solution(solution)
-    print("\nSolution Evaluation:")
-    print(f"Final Performance: {evaluation['final_performance']:.2f}")
-    print(f"Constraints Violated: {'Yes' if evaluation['constraints_violated'] else 'No'}")
-    print(f"Highest Fatigue: {evaluation['highest_fatigue']:.2f}/{problem.max_fatigue:.2f}")
-    print(f"Highest Risk: {evaluation['highest_risk']:.2f}/{problem.max_risk:.2f}")
-    print(f"Rest Days: {evaluation['rest_days']}/{evaluation['days_trained']}")
-    print(f"High Intensity Days: {evaluation['high_intensity_days']}")
-    print(f"Total Workload: {evaluation['total_workload']:.2f}")
-
-if __name__ == "__main__":
-    test_backtracking_csp_max_performance()

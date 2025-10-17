@@ -12,6 +12,10 @@ class GeneticAlgorithm:
         self.num_generations = num_generations
         self.mutation_rate = mutation_rate
     
+        print(self.population_size)
+        print(self.num_generations)
+        print(self.mutation_rate)
+        
     def initialize_population(self):
         population = []
         for _ in range(self.population_size):
@@ -43,13 +47,7 @@ class GeneticAlgorithm:
         """
         Roulette wheel selection (fitness proportionate selection)
         Higher fitness individuals have higher probability of selection
-        
-        Args:
-            evaluated_population: List of (individual, fitness) tuples
-            num_parents: Number of parents to select
-            
-        Returns:
-            List of selected individuals for the mating pool
+
         """
         # Extract fitness values
         population, fitness_values = zip(*evaluated_population)
@@ -79,14 +77,6 @@ class GeneticAlgorithm:
         Tournament selection
         Randomly select tournament_size individuals and pick the best one
         Repeat until we have num_parents individuals
-        
-        Args:
-            evaluated_population: List of (individual, fitness) tuples
-            num_parents: Number of parents to select
-            tournament_size: Number of individuals in each tournament
-            
-        Returns:
-            List of selected individuals for the mating pool
         """
         mating_pool = []
         
@@ -105,13 +95,6 @@ class GeneticAlgorithm:
         Rank selection
         Selection probability is based on rank rather than absolute fitness
         Helps maintain diversity when fitness differences are extreme
-        
-        Args:
-            evaluated_population: List of (individual, fitness) tuples
-            num_parents: Number of parents to select
-            
-        Returns:
-            List of selected individuals for the mating pool
         """
         # Sort population by fitness (ascending)
         sorted_population = sorted(evaluated_population, key=lambda x: x[1])
@@ -240,119 +223,98 @@ class GeneticAlgorithm:
         offspring2 = parent2[:point1] + parent1[point1:point2] + parent2[point2:]
         
         return offspring1, offspring2
+
+    
+    def mutate(self, offspring):
+        """
+        apply muatation on a given individual under the mutation rate
+
+        """
+        mutated = offspring[:]
+        if random.random() < self.mutation_rate:
+            ind = random.randint(0, len(mutated) - 1)
+            mutated[ind] = random.choice(self.problem.actions())
+        return mutated
     
     def run(self):
-        """
-        Runs the genetic algorithm
-        
-        Returns:
-            The best individual found and its fitness
-        """
-        # Initialize population
+        """Returns standardized search result format"""
+        start_time = time.time()
         population = self.initialize_population()
-        
+        best_fitness = -float('inf')
+        best_individual = None
+
         for generation in range(self.num_generations):
-            # Evaluate population
             evaluated_pop = self.evaluate_population(population)
+            current_best = max(evaluated_pop, key=lambda x: x[1])
+            
+            if current_best[1] > best_fitness:
+                best_fitness = current_best[1]
+                best_individual = current_best[0]
 
-            # Find and store the best individual
-            best_individual, best_fitness, best_indi = max(evaluated_pop, key=lambda x: x[1])
-            
-            print(f"Generation {generation}: Best fitness = {best_fitness} === best individual = {best_indi}")
-            mean = sum(Problem.global_dp[(0.9, 120)])
-            mean = mean / len(Problem.global_dp[(0.9, 120)])
-            sigma = sum([ (i - mean)**2 for i in Problem.global_dp[(0.9, 120)]])
-            sigma *= 1/len(Problem.global_dp[(0.9, 120)])
-            sigma = math.sqrt(sigma)
-            
-            print(f"mean: {mean}")
-            print(f"sigma: {sigma}")
-            newgen_start = time.perf_counter()
-            # Create mating pool using selection
             mating_pool = self.rank_selection(evaluated_pop, self.population_size)
-            # Create parent pairs
-            parent_pairs = self.random_pairing( mating_pool)
-
-            # Create new population through crossover and mutation
+            parent_pairs = self.random_pairing(mating_pool)
+            
             new_population = []
+            for p1, p2 in parent_pairs:
+                o1, o2 = self.two_point_crossover(p1, p2)
+                new_population.extend([self.mutate(o1), self.mutate(o2)])
             
-            for parent1, parent2 in parent_pairs:
-                # Crossover
-                offspring1, offspring2 = self.two_point_crossover(parent1, parent2)
-                
-                
-                # Mutation (to be implemented)
-                # offspring1 = self.mutate(offspring1)
-                # offspring2 = self.mutate(offspring2)
-                
-                new_population.extend([offspring1, offspring2])
-            
-            # Limit new population to original size
             population = new_population[:self.population_size]
-            newgen_end = time.perf_counter()
-            print(f"Time for Creating Generation {generation}: {newgen_end - newgen_start} second")
-        
-        # Evaluate final population
-        final_evaluated_pop = self.evaluate_population(population)
-        best_individual, best_fitness, best_indi = max(final_evaluated_pop, key=lambda x: x[1])
-        
-        return best_individual, best_fitness
-    
-    """
-    import numpy as np
 
-elements = ['A', 'B', 'C']
-probabilities = [0.5, 0.3, 0.2]  # Probabilities for A, B, and C respectively
+        # Build final schedule
+        final_state = self.problem.initial_state
+        schedule = []
+        for action in best_individual:
+            final_state = self.problem.apply_action(final_state, action)
+            day, fatigue, risk, performance, _ = final_state
+            schedule.append({
+                'day': day,
+                'intensity': action[0],
+                'duration': action[1],
+                'performance': performance,
+                'fatigue': fatigue,
+                'risk': risk
+            })
 
-# Select 5 elements with replacement
-sample_with_replacement = np.random.choice(elements, size=5, replace=True, p=probabilities)
-print("With replacement:", sample_with_replacement)
+        self.execution_time = time.time() - start_time
+        return self._format_result(schedule, final_state, best_individual)
 
-# Select 3 elements without replacement
-sample_without_replacement = np.random.choice(elements, size=3, replace=False, p=probabilities)
-print("Without replacement:", sample_without_replacement)
+    def _format_result(self, schedule, final_state, best_individual):
+        """Standardized result format for API"""
+        if not best_individual:
+            return {
+                'success': False,
+                'message': 'No solution found',
+                'stats': self._get_stats()
+            }
 
-    """
+        # Calculate metrics
+        rest_days = sum(1 for a in best_individual if a[0] == 0)
+        high_intensity_days = sum(1 for a in best_individual if a[0] >= 0.7)
+        total_workload = sum(a[0]*a[1] for a in best_individual)
 
+        return {
+            'success': True,
+            'message': 'Solution found with Genetic Algorithm',
+            'schedule': schedule,
+            'finalState': {
+                'day': final_state[0],
+                'performance': final_state[3],
+                'fatigue': final_state[1],
+                'risk': final_state[2]
+            },
+            'stats': self._get_stats(),
+            'metrics': {
+                'total_days': final_state[0],
+                'rest_days': rest_days,
+                'high_intensity_days': high_intensity_days,
+                'total_workload': total_workload
+            }
+        }
 
-    def crossover(self, fitness_indiv):
-        parents = self.select_parents(fitness_indiv)
-        offspring = []
-        for i in range(0, len(parents), 2):
-            if i + 1 >= len(parents):
-                break
-                
-            parent1, parent2 = parents[i], parents[i+1]
-            # Ensure the two parents are different
-            if parent1 != parent2:
-                offspring.append(self.crossover_parents(parent1, parent2))
-            else:
-                # If we have identical parents, try to find a different parent
-                different_parent = None
-                for j in range(len(parents)):
-                    if j != i and j != i+1 and parents[j] != parent1:
-                        different_parent = parents[j]
-                        break
-                
-                if different_parent:
-                    offspring.append(self.crossover_parents(parent1, different_parent))
-                else:
-                    # If all parents are identical, still perform crossover
-                    # The crossover_parents method should handle tuple elements properly
-                    offspring.append(self.crossover_parents(parent1, parent2))
-        
-        return offspring
-    
-
-if __name__ == "__main__":
-    test = [(0.9, 120),(0.9, 120),(0.9, 120),(0.9, 120),(0.9, 120),(0.9, 120),(0.9, 120),(0.9, 120),(0.9, 120)]
-
-    start = time.perf_counter()
-    problem = AthletePerformanceProblem(genetic = True,target_day = 14)
-    print(problem.evaluate_individual(test))
-    g = GeneticAlgorithm(problem, num_generations=30, population_size=50)
-    g.run()
-    end = time.perf_counter()
-
-    print(f"Running Time: {end - start:.6f} seconds")
-    
+    def _get_stats(self):
+        return {
+            'nodesExplored': self.num_generations * self.population_size,
+            'maxQueueSize': self.population_size,
+            'executionTime': self.execution_time
+        }
